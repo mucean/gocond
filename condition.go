@@ -1,99 +1,96 @@
 package gocond
 
 import (
-	"math/rand"
 	"sync"
 )
 
+// Checker is a type name that wrap a function take a Context pointer
+// and return a boolean
 type Checker func(*Context) bool
 
-func EmptyCtxChecker(chk func() bool) Checker {
-	return func(c *Context) bool {
-		return chk()
-	}
-}
-
+// Conditional is a interface representing something is true
 type Conditional interface {
+	// Check function will take a Context pointer for parameters and
+	// return a boolean to caller
 	Check(*Context) bool
 }
 
-type Needer interface {
-	Need() bool
-	Default() bool
-}
-
-type Condition struct {
+// A NeedCond struct is connector that the checker can be call by the result of the
+// Need method
+type NeedCond struct {
+	need Needer
+	// the checker function
 	chk Checker
 }
 
-func (c *Condition) Check(ctx *Context) bool {
-	return c.chk(ctx)
-}
-
-type NeedCond struct {
-	Chk     Checker
-	DftNeed bool
-}
-
-func (nc *NeedCond) DoCheck(c Needer, ctx *Context) bool {
-	if c.Need() {
-		return nc.Chk(ctx)
+func (nc *NeedCond) Check(ctx *Context) bool {
+	if nc.need.Need(ctx) {
+		return nc.chk(ctx)
 	}
-	return c.Default()
+	return nc.need.Default()
 }
 
-func (nc *NeedCond) Default() bool {
-	return nc.DftNeed
-}
-
-type RandCond struct {
-	NeedCond
-	MaxInt int
-}
-
-func (rc *RandCond) Need() bool {
-	return rand.Intn(rc.MaxInt) == 0
-}
-
-func (rc *RandCond) Check(ctx *Context) bool {
-	return rc.DoCheck(rc, ctx)
-}
-
-func NewNextRandCond(chk Checker, maxInt int, def bool) *NextRandCond {
-	return &NextRandCond{
-		RandCond: RandCond{
-			NeedCond: NeedCond{
-				Chk:     chk,
-				DftNeed: def,
-			},
-			MaxInt: maxInt,
-		},
+// NewNeedCond function initializes NeedCond
+func NewNeedCond(chk Checker, need Needer) *NeedCond {
+	return &NeedCond{
+		chk:  chk,
+		need: need,
 	}
 }
 
-type NextRandCond struct {
+// NewRandCond function initialize NeedCond with a RandNeed Needer
+func NewRandCond(chk Checker, maxInt int, dft bool) *NeedCond {
+	return NewNeedCond(chk, NewRandNeed(maxInt, dft))
+}
+
+// NewNextRandCond initializes the NextNeedCond struct with the checker function
+// and a Needer
+func NewNextNeedCond(chk Checker, need Needer) *NextNeedCond {
+	return &NextNeedCond{
+		chk:  chk,
+		need: need,
+		next: true,
+	}
+}
+
+// The difference between NextNeedCond and NeedCond is when the Checker returns
+// not equal de Needer's default value, Check method must call in the next called
+type NextNeedCond struct {
 	locker sync.RWMutex
-	RandCond
-	next bool
+	chk    Checker
+	need   Needer
+	next   bool
 }
 
-func (nc *NextRandCond) Check(ctx *Context) bool {
-	res := nc.DoCheck(nc, ctx)
-	nc.locker.Lock()
-	if !nc.next && res != nc.Default() {
-		nc.next = true
-	}
-	nc.locker.Unlock()
-	return res
-}
-
-func (nc *NextRandCond) Need() bool {
+func (nc *NextNeedCond) Check(ctx *Context) bool {
 	nc.locker.RLock()
 	next := nc.next
 	nc.locker.RUnlock()
-	res := next
+	run := next
 	if !next {
-		res = nc.RandCond.Need()
+		run = nc.need.Need(ctx)
+	}
+	dft := nc.need.Default()
+	res := dft
+	if run {
+		res = nc.chk(ctx)
+		nc.locker.Lock()
+		if nc.next {
+			if res == dft {
+				nc.next = false
+			}
+		} else {
+			if res != dft {
+				nc.next = true
+			}
+		}
+		nc.locker.Unlock()
+	} else {
+		nc.locker.Lock()
+		if nc.next {
+			nc.next = false
+		}
+		nc.locker.Unlock()
 	}
 	return res
 }
